@@ -1,8 +1,8 @@
 # Go binary files
 bin/
 sso-be-linux
-server
-server.exe
+/server
+/server.exe
 *.exe
 *.exe~
 *.dll
