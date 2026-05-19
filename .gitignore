@@ -1,0 +1,11 @@
+# Compiled binaries / executables
+server
+server.exe
+*.exe
+
+# Environment configurations
+.env
+.env.local
+
+# OS files
+.DS_Store
