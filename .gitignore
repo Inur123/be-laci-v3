@@ -1,7 +1,13 @@
-# Compiled binaries / executables
+# Go binary files
+bin/
+sso-be-linux
 server
 server.exe
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 
 # Environment configurations
 .env
