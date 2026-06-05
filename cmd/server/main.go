@@ -34,10 +34,17 @@ func main() {
 
 	e := echo.New()
 
-	e.Use(middleware.Logger())
+	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
+		Format: "⇨ [LACI-V3] ${time_custom} | ${status} | ${latency_human} | ${remote_ip} | ${method} ${uri}\n",
+		CustomTimeFormat: "2006-01-02 15:04:05",
+	}))
 	e.Use(middleware.Recover())
+	clientURL := os.Getenv("CLIENT_URL")
+	if clientURL == "" {
+		clientURL = "*"
+	}
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"http://localhost:3001"},
+		AllowOrigins: []string{clientURL},
 		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
 	}))
 
@@ -65,10 +72,11 @@ func main() {
 			token := parts[1]
 
 			// Verify token with SSO Backend
-			ssoUserUrl := os.Getenv("SSO_USER_INFO_URL")
-			if ssoUserUrl == "" {
-				ssoUserUrl = "http://localhost:8080/v1/user/me"
+			ssoApiUrl := os.Getenv("SSO_API_URL")
+			if ssoApiUrl == "" {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "SSO_API_URL env is not configured"})
 			}
+			ssoUserUrl := fmt.Sprintf("%s/v1/user/me", strings.TrimSuffix(ssoApiUrl, "/"))
 
 			req, err := http.NewRequest("GET", ssoUserUrl, nil)
 			if err != nil {
@@ -116,5 +124,8 @@ func main() {
 	if port == "" {
 		port = "8081"
 	}
+	fmt.Println("\n==========================================")
+	fmt.Println("         RUNNING: LACI-V3 BACKEND         ")
+	fmt.Println("==========================================")
 	e.Logger.Fatal(e.Start(fmt.Sprintf(":%s", port)))
 }
