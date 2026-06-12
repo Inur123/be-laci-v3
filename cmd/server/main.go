@@ -1,49 +1,53 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
-	"os"
-	"strings"
 
-	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	echomiddleware "github.com/labstack/echo/v4/middleware"
+
+	"laci-v3/be/internal/config"
+	"laci-v3/be/internal/database"
+	"laci-v3/be/internal/domain"
+	"laci-v3/be/internal/handler"
+	"laci-v3/be/internal/middleware"
+	"laci-v3/be/internal/repository"
+	"laci-v3/be/internal/service"
 )
 
-type UserResponse struct {
-	Success bool `json:"success"`
-	Message string `json:"message"`
-	Data    struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		Email     string `json:"email"`
-		Phone     string `json:"phone"`
-		Gender    string `json:"gender"`
-		Image     string `json:"image"`
-		Role      string `json:"role"`
-		Verified  bool   `json:"is_verified"`
-	} `json:"data"`
-}
-
 func main() {
-	// Load .env if present
-	_ = godotenv.Load()
+	// 1. Load config
+	cfg := config.Load()
 
+	// 2. Connect database (PostgreSQL)
+	db := database.ConnectPostgres()
+
+	// 3. Auto-migrate schema
+	if err := db.AutoMigrate(&domain.Activity{}); err != nil {
+		log.Fatalf("Failed to auto-migrate database: %v", err)
+	}
+
+	// 4. Dependency Injection
+	activityRepo := repository.NewActivityRepository(db)
+	activitySvc := service.NewActivityService(activityRepo)
+	activityHandler := handler.NewActivityHandler(activitySvc)
+
+	// 5. Echo Setup
 	e := echo.New()
 
-	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
+	e.Use(echomiddleware.LoggerWithConfig(echomiddleware.LoggerConfig{
 		Format: "⇨ [LACI-V3] ${time_custom} | ${status} | ${latency_human} | ${remote_ip} | ${method} ${uri}\n",
 		CustomTimeFormat: "2006-01-02 15:04:05",
 	}))
-	e.Use(middleware.Recover())
-	clientURL := os.Getenv("CLIENT_URL")
+	e.Use(echomiddleware.Recover())
+
+	clientURL := cfg.ClientURL
 	if clientURL == "" {
 		clientURL = "*"
 	}
-	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
+	e.Use(echomiddleware.CORSWithConfig(echomiddleware.CORSConfig{
 		AllowOrigins: []string{clientURL},
 		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
 	}))
@@ -56,61 +60,6 @@ func main() {
 		})
 	})
 
-	// Middleware Oauth2 SSO Verification
-	SSOMiddleware := func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			authHeader := c.Request().Header.Get("Authorization")
-			if authHeader == "" {
-				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Authorization header is required"})
-			}
-
-			parts := strings.Split(authHeader, " ")
-			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid Authorization header format"})
-			}
-
-			token := parts[1]
-
-			// Verify token with SSO Backend
-			ssoApiUrl := os.Getenv("SSO_API_URL")
-			if ssoApiUrl == "" {
-				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "SSO_API_URL env is not configured"})
-			}
-			ssoUserUrl := fmt.Sprintf("%s/v1/user/me", strings.TrimSuffix(ssoApiUrl, "/"))
-
-			req, err := http.NewRequest("GET", ssoUserUrl, nil)
-			if err != nil {
-				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create verification request"})
-			}
-			req.Header.Set("Authorization", "Bearer "+token)
-
-			client := &http.Client{}
-			resp, err := client.Do(req)
-			if err != nil {
-				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Failed to reach SSO server"})
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid session or token expired"})
-			}
-
-			bodyBytes, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to read verification response"})
-			}
-
-			var userResp UserResponse
-			if err := json.Unmarshal(bodyBytes, &userResp); err != nil {
-				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to parse user info"})
-			}
-
-			// Store user in context
-			c.Set("user", &userResp.Data)
-			return next(c)
-		}
-	}
-
 	// Protected route
 	e.GET("/api/data", func(c echo.Context) error {
 		user := c.Get("user")
@@ -118,9 +67,17 @@ func main() {
 			"message": "Halo! Data ini dilindungi oleh SSO-v2",
 			"user":    user,
 		})
-	}, SSOMiddleware)
+	}, middleware.SSOMiddleware)
 
-	port := os.Getenv("APP_PORT")
+	// Activities endpoints
+	e.GET("/api/activities", activityHandler.GetActivities)
+
+	apiGroup := e.Group("/api")
+	apiGroup.POST("/activities", activityHandler.CreateActivity, middleware.SSOMiddleware)
+	apiGroup.PUT("/activities/:id", activityHandler.UpdateActivity, middleware.SSOMiddleware)
+	apiGroup.DELETE("/activities/:id", activityHandler.DeleteActivity, middleware.SSOMiddleware)
+
+	port := cfg.AppPort
 	if port == "" {
 		port = "8081"
 	}

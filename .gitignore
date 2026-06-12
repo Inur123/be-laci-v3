@@ -15,3 +15,6 @@ sso-be-linux
 
 # OS files
 .DS_Store
+
+# Credentials
+google-credentials.json
